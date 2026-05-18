@@ -132,8 +132,6 @@ class HabitatVLNEvaluator(DistributedEvaluator):
 
         model.eval()
         self.device = device
-        self.last_predict_step_nums = 32
-        self.prev_depth_map = None
 
         self.model = model
         self.processor = processor
@@ -458,25 +456,9 @@ class HabitatVLNEvaluator(DistributedEvaluator):
                         depths_dp = torch.stack([pix_goal_depth, depth_dp]).unsqueeze(0).to(self.device)
 
                         with torch.no_grad():
-                            dp_actions = self.model.generate_traj(
-                                traj_latents, images_dp, depths_dp,
-                                predict_step_nums=self.last_predict_step_nums,
-                            )
+                            dp_actions = self.model.generate_traj(traj_latents, images_dp, depths_dp)
 
-                        # Compute temporal depth change for sudden obstacle detection
-                        from internnav.utils.geometry_utils import extract_depth_map, compute_depth_change
-                        curr_depth = extract_depth_map(depths_dp)
-                        _, change_ratio = compute_depth_change(curr_depth, self.prev_depth_map)
-                        self.prev_depth_map = curr_depth.copy()
-
-                        action_list, avg_sum_dist, remaining_count = traj_to_actions(dp_actions, change_ratio=change_ratio)
-
-                        # Update next-run predict_step_nums
-                        if change_ratio > 0.02 or avg_sum_dist > 1:
-                            self.last_predict_step_nums = 32
-                        else:
-                            self.last_predict_step_nums = max(remaining_count, 4)
-
+                        action_list = traj_to_actions(dp_actions)
                         if len(action_list) < MAX_STEPS:
                             action_list += [0] * (MAX_STEPS - len(action_list))
 
@@ -513,25 +495,9 @@ class HabitatVLNEvaluator(DistributedEvaluator):
 
                         depths_dp = torch.stack([pix_goal_depth, depth_dp]).unsqueeze(0).to(self.device)
                         with torch.no_grad():
-                            dp_actions = self.model.generate_traj(
-                                traj_latents, images_dp, depths_dp,
-                                predict_step_nums=self.last_predict_step_nums,
-                            )
+                            dp_actions = self.model.generate_traj(traj_latents, images_dp, depths_dp)
 
-                        # Compute temporal depth change for sudden obstacle detection
-                        from internnav.utils.geometry_utils import extract_depth_map, compute_depth_change
-                        curr_depth = extract_depth_map(depths_dp)
-                        _, change_ratio = compute_depth_change(curr_depth, self.prev_depth_map)
-                        self.prev_depth_map = curr_depth.copy()
-
-                        action_list, avg_sum_dist, remaining_count = traj_to_actions(dp_actions, change_ratio=change_ratio)
-
-                        # Update next-run predict_step_nums
-                        if change_ratio > 0.02 or avg_sum_dist > 1:
-                            self.last_predict_step_nums = 32
-                        else:
-                            self.last_predict_step_nums = max(remaining_count, 4)
-
+                        action_list = traj_to_actions(dp_actions)
                         if len(action_list) < MAX_STEPS:
                             action_list += [0] * (MAX_STEPS - len(action_list))
 

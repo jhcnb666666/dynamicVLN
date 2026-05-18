@@ -57,8 +57,6 @@ class InternVLAN1Net(PreTrainedModel):
         self.episode_idx = 0  # S2's episode idx is different from the system's idx
         self.conversation_history = []  # Multi-turn conversation exists when looking down
         self.llm_output = ""
-        self.last_predict_step_nums = 32
-        self.prev_depth_map = None
 
     def init_prompts(self):
         self.DEFAULT_IMAGE_TOKEN = "<image>"
@@ -94,8 +92,6 @@ class InternVLAN1Net(PreTrainedModel):
         self.episode_idx = 0
         self.conversation_history = []
         self.llm_output = ""
-        self.last_predict_step_nums = 32
-        self.prev_depth_map = None
 
     def parse_actions(self, output):
         action_patterns = '|'.join(re.escape(action) for action in self.actions2idx)
@@ -194,8 +190,6 @@ class InternVLAN1Net(PreTrainedModel):
             with torch.no_grad():
                 traj_latents = self.model.generate_latents(output_ids, inputs.pixel_values, image_grid_thw)
             output.output_latent = traj_latents
-            # Reset waypoint count whenever a new latent goal is produced
-            self.last_predict_step_nums = 32
 
         else:  # Output action
             action_seq = self.parse_actions(self.llm_output)
@@ -203,82 +197,17 @@ class InternVLAN1Net(PreTrainedModel):
 
         return output
 
-    @staticmethod
-    def _extract_depth_map(depth_map):
-        """Normalize depth input to a [H, W] numpy array in meters."""
-        if isinstance(depth_map, torch.Tensor):
-            depth_map = depth_map.detach().cpu().numpy()
-        depth_map = np.asarray(depth_map)
-
-        if depth_map.ndim == 5:
-            depth_map = depth_map[0, -1, :, :, 0]   # async: [B, T, H, W, C] → current frame
-        elif depth_map.ndim == 4:
-            depth_map = depth_map[0, -1, :, :]      # async without channel dim
-        elif depth_map.ndim == 3:
-            depth_map = depth_map[:, :, 0]          # sync: [H, W, C]
-
-        # Sync mode may scale depth by 10000
-        if depth_map.max() > 1000:
-            depth_map = depth_map / 10000.0
-
-        return depth_map
-
-    def _compute_depth_change(self, curr_depth):
-        """Compute temporal depth change ratio between current and previous frame.
-
-        Returns (depth_variance, change_ratio).
-        - depth_variance: spatial variance of current depth map (reflects scene complexity)
-        - change_ratio: ratio of pixels with significant depth change (>0.3m) vs previous frame
-        """
-        valid_mask = (curr_depth > 0.01) & (curr_depth < 100)
-        valid_depth = curr_depth[valid_mask]
-        if len(valid_depth) == 0:
-            return 0.0, 0.0
-
-        depth_var = float(np.var(valid_depth))
-
-        if self.prev_depth_map is not None and self.prev_depth_map.shape == curr_depth.shape:
-            diff = np.abs(curr_depth - self.prev_depth_map)
-            # Only count pixels where depth changed significantly (new obstacle or removed obstacle)
-            significant = diff > 0.3
-            change_ratio = float(significant.sum()) / significant.size
-        else:
-            change_ratio = 0.0
-
-        return depth_var, change_ratio
-
     def s1_step_latent(self, rgb, depth, latent):
         with torch.no_grad():
             dp_actions = self.model.generate_traj(
-                traj_latents=latent,
-                images_dp=rgb,
-                depths_dp=depth,
-                predict_step_nums=self.last_predict_step_nums,
+                traj_latents=latent, images_dp=rgb, depths_dp=depth
             )  # use_aysnc based on MODEL
 
-        # Extract current depth and compute temporal change
-        curr_depth = self._extract_depth_map(depth)
-        _, change_ratio = self._compute_depth_change(curr_depth)
-        self.prev_depth_map = curr_depth.copy()
-
         if self.continuous_traj:
-            action_list, avg_sum_dist, remaining_count = traj_to_actions(dp_actions, change_ratio=change_ratio)
-            # Priority: sudden environmental change > trajectory curvature
-            if change_ratio > 0.02 or avg_sum_dist > 1:
-                self.last_predict_step_nums = 32
-            else:
-                self.last_predict_step_nums = max(remaining_count, 4)
+            action_list = traj_to_actions(dp_actions)
         else:
             random_choice = np.random.choice(dp_actions.shape[0])
             action_list = chunk_token(dp_actions[random_choice])
-            # Temporarily reconstruct a single trajectory to get stats for dynamic adjustment
-            _, avg_sum_dist, remaining_count = traj_to_actions(
-                dp_actions[random_choice : random_choice + 1], use_discrate_action=False, change_ratio=change_ratio
-            )
-            if change_ratio > 0.02 or avg_sum_dist > 1:
-                self.last_predict_step_nums = 32
-            else:
-                self.last_predict_step_nums = max(remaining_count, 4)
 
         action_list = [x for x in action_list if x != 0]
 

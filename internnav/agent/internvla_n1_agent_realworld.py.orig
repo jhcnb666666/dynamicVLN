@@ -19,7 +19,6 @@ from transformers import AutoProcessor
 
 from internnav.model.basemodel.internvla_n1.internvla_n1 import InternVLAN1ForCausalLM
 from internnav.model.utils.vln_utils import S2Output, split_and_clean, traj_to_actions
-from internnav.utils.geometry_utils import extract_depth_map, compute_depth_change
 
 DEFAULT_IMAGE_TOKEN = "<image>"
 
@@ -41,8 +40,6 @@ class InternVLAN1AsyncAgent:
         self.processor = AutoProcessor.from_pretrained(args.model_path)
         self.processor.tokenizer.padding_side = 'left'
 
-        self.last_predict_step_nums = 32
-        self.prev_depth_map = None
         self.resize_w = args.resize_w
         self.resize_h = args.resize_h
         self.num_history = args.num_history
@@ -86,8 +83,6 @@ class InternVLAN1AsyncAgent:
         self.output_pixel = None
         self.pixel_goal_rgb = None
         self.pixel_goal_depth = None
-        self.last_predict_step_nums = 32
-        self.prev_depth_map = None
 
     def reset(self):
         self.rgb_list = []
@@ -164,19 +159,7 @@ class InternVLAN1AsyncAgent:
             )
             trajectories = self.step_s1(self.output_latent, rgbs, depths)
 
-            # Compute temporal depth change for sudden obstacle detection
-            curr_depth = extract_depth_map(depths)
-            _, change_ratio = compute_depth_change(curr_depth, self.prev_depth_map)
-            self.prev_depth_map = curr_depth.copy()
-
-            trajectory, avg_sum_dist, remaining_count = traj_to_actions(trajectories, use_discrate_action=False, change_ratio=change_ratio)
-            dual_sys_output.output_trajectory = trajectory
-
-            # Update next-run predict_step_nums
-            if change_ratio > 0.02 or avg_sum_dist > 1:
-                self.last_predict_step_nums = 32
-            else:
-                self.last_predict_step_nums = max(remaining_count, 4)
+            dual_sys_output.output_trajectory = traj_to_actions(trajectories, use_discrate_action=False)
 
         return dual_sys_output
 
@@ -263,17 +246,12 @@ class InternVLAN1AsyncAgent:
             t0 = time.time()
             with torch.no_grad():
                 traj_latents = self.model.generate_latents(output_ids, pixel_values, image_grid_thw)
-            # Reset waypoint count whenever a new latent goal is produced
-            self.last_predict_step_nums = 32
-            return None, traj_latents, pixel_goal
+                return None, traj_latents, pixel_goal
 
         else:
             action_seq = self.parse_actions(self.llm_output)
             return action_seq, None, None
 
     def step_s1(self, latent, rgb, depth):
-        all_trajs = self.model.generate_traj(
-            latent, rgb, depth,
-            predict_step_nums=self.last_predict_step_nums,
-        )
+        all_trajs = self.model.generate_traj(latent, rgb, depth)
         return all_trajs

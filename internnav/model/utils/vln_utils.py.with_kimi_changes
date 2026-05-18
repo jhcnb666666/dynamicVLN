@@ -136,26 +136,26 @@ def traj_to_actions(dp_actions, use_discrate_action=True, change_ratio=None):
     trajectory = np.mean(all_trajectory, axis=0)
 
     # Compute cosine-distance statistics for the averaged trajectory
-    # Both branches now use iterative removal: keep deleting the waypoint with
-    # the smallest cosine-distance sum until the average exceeds avg_threshold.
-    # NOTE: larger avg_threshold = more aggressive removal (need higher curvature to stop).
     if change_ratio is not None and change_ratio <= 0.02:
-        # Stable environment: allow aggressive pruning (larger avg_threshold)
-        avg_threshold = 1.0
+        # Iteratively remove waypoints with the smallest cosine-distance sum.
+        # Stop when the average exceeds the threshold.
+        filtered_traj, avg_sum_dist, remaining_count = filter_waypoints_iterative_by_cosine_distance(
+            trajectory, avg_threshold=1.0
+        )
+        removed_count = len(trajectory) - remaining_count
+        print(
+            f"[Waypoint Cosine Stats - Iterative] avg_sum_dist={avg_sum_dist:.4f}, "
+            f"original={len(trajectory)}, remaining={remaining_count}, removed={removed_count}"
+        )
+        trajectory = filtered_traj
     else:
-        # Unstable environment: be conservative and keep more waypoints (smaller avg_threshold)
-        avg_threshold = 0.5
-
-    filtered_traj, avg_sum_dist, remaining_count = filter_waypoints_iterative_by_cosine_distance(
-        trajectory, avg_threshold=avg_threshold
-    )
-    removed_count = len(trajectory) - remaining_count
-    print(
-        f"[Waypoint Cosine Stats - Iterative] avg_sum_dist={avg_sum_dist:.4f}, "
-        f"avg_threshold={avg_threshold:.2f}, original={len(trajectory)}, "
-        f"remaining={remaining_count}, removed={removed_count}"
-    )
-    trajectory = filtered_traj
+        avg_sum_dist, remaining_count, removed_count, per_waypoint_sums = compute_waypoint_cosine_stats(
+            trajectory, threshold=0.2
+        )
+        print(
+            f"[Waypoint Cosine Stats] avg_sum_dist={avg_sum_dist:.4f}, "
+            f"original={len(trajectory)}, remaining={remaining_count}, removed={removed_count}"
+        )
 
     if use_discrate_action:
         actions = trajectory_to_discrete_actions_close_to_goal(trajectory)

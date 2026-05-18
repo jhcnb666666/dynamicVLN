@@ -453,36 +453,10 @@ def filter_waypoints_by_cosine_distance(waypoints, threshold=0.2):
             sim = np.sum(a * b, axis=-1, keepdims=True) / (norm_a * norm_b)
             return np.squeeze(1.0 - sim, axis=-1)
 
-    # Pre-filter: remove all interior waypoints whose cosine-distance sum is < 0.1.
-    def _pre_filter(wp, motion_vecs):
-        N = wp.shape[0]
-        if isinstance(wp, torch.Tensor):
-            keep_mask = torch.ones(N, dtype=torch.bool, device=wp.device)
-        else:
-            keep_mask = np.ones(N, dtype=bool)
-        for i in range(1, N - 1):
-            prev_vec = motion_vecs[i - 1]
-            curr_vec = motion_vecs[i]
-            dist_prev = _cosine_distance(prev_vec, curr_vec)
-            if i < N - 2:
-                next_vec = motion_vecs[i + 1]
-                dist_next = _cosine_distance(curr_vec, next_vec)
-            else:
-                if isinstance(wp, torch.Tensor):
-                    dist_next = torch.tensor(0.0, device=wp.device, dtype=wp.dtype)
-                else:
-                    dist_next = 0.0
-            if dist_prev + dist_next < 0.1:
-                keep_mask[i] = False
-        return wp[keep_mask]
-
     if isinstance(waypoints, torch.Tensor):
         wp = waypoints.detach()
         N = wp.shape[0]
-        motion_vecs = wp[1:] - wp[:-1]
-        wp = _pre_filter(wp, motion_vecs)
-        # Recompute motion vectors after pre-filter
-        N = wp.shape[0]
+        # Motion vectors: v[k] = wp[k+1] - wp[k], shape (N-1, D)
         motion_vecs = wp[1:] - wp[:-1]
         keep_mask = torch.ones(N, dtype=torch.bool, device=wp.device)
         for i in range(1, N - 1):
@@ -499,10 +473,6 @@ def filter_waypoints_by_cosine_distance(waypoints, threshold=0.2):
         return wp[keep_mask]
     else:
         wp = np.asarray(waypoints)
-        N = wp.shape[0]
-        motion_vecs = wp[1:] - wp[:-1]
-        wp = _pre_filter(wp, motion_vecs)
-        # Recompute motion vectors after pre-filter
         N = wp.shape[0]
         motion_vecs = wp[1:] - wp[:-1]
         keep_mask = np.ones(N, dtype=bool)
@@ -624,16 +594,6 @@ def filter_waypoints_iterative_by_cosine_distance(waypoints, avg_threshold=1.0):
         return sums
 
     current_wp = wp.copy()
-
-    # Pre-filter: remove all interior waypoints whose cosine-distance sum is < 0.1
-    # in one shot before entering iterative removal.
-    pre_sums = _compute_sums(current_wp)
-    if pre_sums:
-        keep_mask = np.ones(current_wp.shape[0], dtype=bool)
-        for i, s in enumerate(pre_sums):
-            if s < 0.1:
-                keep_mask[i + 1] = False  # i corresponds to waypoint index i+1
-        current_wp = current_wp[keep_mask]
 
     while current_wp.shape[0] > 3:
         sums = _compute_sums(current_wp)
